@@ -1,11 +1,12 @@
-package handler
+package scaling
 
 import (
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
@@ -108,7 +109,11 @@ var testMetadatas = []testMetadata{
 func TestResolveNonExistingConfigMapsOrSecretsEnv(t *testing.T) {
 
 	for _, testData := range testMetadatas {
-		testScaleHandler := NewScaleHandler(fake.NewFakeClient(), nil, scheme.Scheme)
+		testScaleHandler := scaleHandler{
+			client:            fake.NewFakeClient(),
+			logger:            logf.Log.WithName("test"),
+			scaleLoopContexts: &sync.Map{},
+		}
 
 		_, err := testScaleHandler.resolveEnv(testData.container, namespace)
 
