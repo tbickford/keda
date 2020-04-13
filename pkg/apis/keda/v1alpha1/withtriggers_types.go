@@ -7,8 +7,6 @@ import (
 	"knative.dev/pkg/apis/duck"
 )
 
-// +genduck
-
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // WithTriggers is a specification for a resource with triggers

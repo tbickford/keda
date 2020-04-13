@@ -84,7 +84,6 @@ func (h *scaleExecutor) scaleJobs(ctx context.Context, scaledJob *kedav1alpha1.S
 }
 
 func (h *scaleExecutor) createJobs(scaledJob *kedav1alpha1.ScaledJob, scaleTo int64, maxScale int64) {
-	// FIXME use ScaledJob
 	// scaledObject.Spec.JobTargetRef.Template.GenerateName = scaledObject.GetName() + "-"
 	// if scaledObject.Spec.JobTargetRef.Template.Labels == nil {
 	// 	scaledObject.Spec.JobTargetRef.Template.Labels = map[string]string{}
@@ -112,7 +111,6 @@ func (h *scaleExecutor) createJobs(scaledJob *kedav1alpha1.ScaledJob, scaleTo in
 					"scaledobject":                 scaledJob.GetName(),
 				},
 			},
-			// FIXME use ScaledJob
 			//Spec: *scaledObject.Spec.JobTargetRef.DeepCopy(),
 		}
 

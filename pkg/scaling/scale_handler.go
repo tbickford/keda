@@ -66,27 +66,26 @@ func (h *scaleHandler) GetScalers(scalableObject interface{}) ([]scalers.Scaler,
 }
 
 func asDuckWithTriggers(scalableObject interface{}) (*kedav1alpha1.WithTriggers, error) {
-	switch scalableObject.(type) {
-	case *kedav1alpha1.ScaledObject, *kedav1alpha1.ScaledJob:
-		break
+	withTriggers := &kedav1alpha1.WithTriggers{}
+	switch obj := scalableObject.(type) {
+	case *kedav1alpha1.ScaledObject:
+	withTriggers = &kedav1alpha1.WithTriggers{
+			Spec: kedav1alpha1.WithTriggersSpec{
+				PollingInterval: obj.Spec.PollingInterval,
+				Triggers: obj.Spec.Triggers,
+			},
+		}
+	case *kedav1alpha1.ScaledJob:
+		withTriggers = &kedav1alpha1.WithTriggers{
+			Spec: kedav1alpha1.WithTriggersSpec{
+				PollingInterval: obj.Spec.PollingInterval,
+				Triggers: obj.Spec.Triggers,
+			},
+		}
 	default:
+		// here could be the conversion from unknown Duck type potentially in the future
 		return nil, fmt.Errorf("unknown scalable object type %v", scalableObject)
 	}
-
-	unstructMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(scalableObject)
-	if err != nil {
-		return nil, err
-	}
-
-	unstruct := &unstructured.Unstructured{}
-	unstruct.SetUnstructuredContent(unstructMap)
-
-	withTriggers := &kedav1alpha1.WithTriggers{}
-	err = duck.FromUnstructured(unstruct, withTriggers)
-	if err != nil {
-		return nil, err
-	}
-
 	return withTriggers, nil
 }
 
@@ -258,7 +257,7 @@ func (h *scaleHandler) resolveAuthSecret(name, namespace, key string) string {
 	return string(result)
 }
 
-func (h *scaleHandler) parseAuthRef(triggerAuthRef *kedav1alpha1.ScaledObjectAuthRef, withTriggers *kedav1alpha1.WithTriggers, resolveEnv func(string, string) string) (map[string]string, string) {
+func (h *scaleHandler) parseAuthRef(triggerAuthRef *kedav1alpha1.ScaledObjectAuthRef, withTriggers *kedav1alpha1.WithTriggers, podSpec *corev1.PodSpec) (map[string]string, string) {
 	result := make(map[string]string)
 	podIdentity := ""
 
@@ -271,7 +270,12 @@ func (h *scaleHandler) parseAuthRef(triggerAuthRef *kedav1alpha1.ScaledObjectAut
 			podIdentity = string(triggerAuth.Spec.PodIdentity.Provider)
 			if triggerAuth.Spec.Env != nil {
 				for _, e := range triggerAuth.Spec.Env {
-					result[e.Parameter] = resolveEnv(e.Name, e.ContainerName)
+					env, err := h.resolveContainerEnv(podSpec, e.ContainerName, withTriggers.Namespace)
+					if err != nil {
+						result[e.Parameter] = ""
+					} else {
+						result[e.Parameter] = env[e.Name]
+					}
 				}
 			}
 			if triggerAuth.Spec.SecretTargetRef != nil {
@@ -323,7 +327,7 @@ func (h *scaleHandler) getScalers(scalableType *kedav1alpha1.WithTriggers, withP
 	}
 
 	for i, trigger := range scalableType.Spec.Triggers {
-		authParams, podIdentity := h.parseScaledObjectAuthRef(trigger.AuthenticationRef, scalableType, &withPods.Spec.Template.Spec)
+		authParams, podIdentity := h.parseAuthRef(trigger.AuthenticationRef, scalableType, &withPods.Spec.Template.Spec)
 
 		if podIdentity == kedav1alpha1.PodIdentityProviderAwsEKS {
 			serviceAccountName := withPods.Spec.Template.Spec.ServiceAccountName
@@ -348,16 +352,6 @@ func (h *scaleHandler) getScalers(scalableType *kedav1alpha1.WithTriggers, withP
 	}
 
 	return scalersRes, nil
-}
-
-func (h *scaleHandler) parseScaledObjectAuthRef(triggerAuthRef *kedav1alpha1.ScaledObjectAuthRef, scalableType *kedav1alpha1.WithTriggers, podSpec *corev1.PodSpec) (map[string]string, string) {
-	return h.parseAuthRef(triggerAuthRef, scalableType, func(name, containerName string) string {
-		env, err := h.resolveContainerEnv(podSpec, containerName, scalableType.Namespace)
-		if err != nil {
-			return ""
-		}
-		return env[name]
-	})
 }
 
 func (h *scaleHandler) getScaler(name, namespace, triggerType string, resolvedEnv, triggerMetadata, authParams map[string]string, podIdentity string) (scalers.Scaler, error) {
