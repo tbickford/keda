@@ -16,14 +16,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-func (h *scaleExecutor) RequestJobScale(ctx context.Context, scalers []scalers.Scaler, scaledJob *kedav1alpha1.ScaledJob) {
+func (e *scaleExecutor) RequestJobScale(ctx context.Context, scalers []scalers.Scaler, scaledJob *kedav1alpha1.ScaledJob) {
 	var queueLength int64
 	var maxValue int64
 	isActive := false
 
 	for _, scaler := range scalers {
 		defer scaler.Close()
-		scalerLogger := h.logger.WithValues("Scaler", scaler)
+		scalerLogger := e.logger.WithValues("Scaler", scaler)
 
 		isTriggerActive, err := scaler.IsActive(ctx)
 		scalerLogger.Info("Active trigger", "isTriggerActive", isTriggerActive)
@@ -55,12 +55,12 @@ func (h *scaleExecutor) RequestJobScale(ctx context.Context, scalers []scalers.S
 		}
 	}
 
-	h.scaleJobs(ctx, scaledJob, isActive, queueLength, maxValue)
+	e.scaleJobs(ctx, scaledJob, isActive, queueLength, maxValue)
 }
 
-func (h *scaleExecutor) scaleJobs(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, isActive bool, scaleTo int64, maxScale int64) {
-	runningJobCount := h.getRunningJobCount(scaledJob, maxScale)
-	h.logger.Info("Scaling Jobs", "Number of running Jobs ", runningJobCount)
+func (e *scaleExecutor) scaleJobs(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, isActive bool, scaleTo int64, maxScale int64) {
+	runningJobCount := e.getRunningJobCount(scaledJob, maxScale)
+	e.logger.Info("Scaling Jobs", "Number of running Jobs ", runningJobCount)
 
 	var effectiveMaxScale int64
 	effectiveMaxScale = maxScale - runningJobCount
@@ -68,34 +68,34 @@ func (h *scaleExecutor) scaleJobs(ctx context.Context, scaledJob *kedav1alpha1.S
 		effectiveMaxScale = 0
 	}
 
-	h.logger.Info("Scaling Jobs")
+	e.logger.Info("Scaling Jobs")
 
 	if isActive {
-		h.logger.V(1).Info("At least one scaler is active")
+		e.logger.V(1).Info("At least one scaler is active")
 		now := metav1.Now()
 		scaledJob.Status.LastActiveTime = &now
-		h.updateLastActiveTime(ctx, scaledJob)
-		h.createJobs(scaledJob, scaleTo, effectiveMaxScale)
+		e.updateLastActiveTime(ctx, scaledJob)
+		e.createJobs(scaledJob, scaleTo, effectiveMaxScale)
 
 	} else {
-		h.logger.V(1).Info("No change in activity")
+		e.logger.V(1).Info("No change in activity")
 	}
 	return
 }
 
-func (h *scaleExecutor) createJobs(scaledJob *kedav1alpha1.ScaledJob, scaleTo int64, maxScale int64) {
+func (e *scaleExecutor) createJobs(scaledJob *kedav1alpha1.ScaledJob, scaleTo int64, maxScale int64) {
 	// scaledObject.Spec.JobTargetRef.Template.GenerateName = scaledObject.GetName() + "-"
 	// if scaledObject.Spec.JobTargetRef.Template.Labels == nil {
 	// 	scaledObject.Spec.JobTargetRef.Template.Labels = map[string]string{}
 	// }
 	// scaledObject.Spec.JobTargetRef.Template.Labels["scaledobject"] = scaledObject.GetName()
 
-	h.logger.Info("Creating jobs", "Effective number of max jobs", maxScale)
+	e.logger.Info("Creating jobs", "Effective number of max jobs", maxScale)
 
 	if scaleTo > maxScale {
 		scaleTo = maxScale
 	}
-	h.logger.Info("Creating jobs", "Number of jobs", scaleTo)
+	e.logger.Info("Creating jobs", "Number of jobs", scaleTo)
 
 	for i := 0; i < int(scaleTo); i++ {
 
@@ -117,27 +117,27 @@ func (h *scaleExecutor) createJobs(scaledJob *kedav1alpha1.ScaledJob, scaleTo in
 		// Job doesn't allow RestartPolicyAlways, it seems like this value is set by the client as a default one,
 		// we should set this property to allowed value in that case
 		if job.Spec.Template.Spec.RestartPolicy == "" {
-			h.logger.V(1).Info("Job RestartPolicy is not set, setting it to 'OnFailure', to avoid setting it to the client's default value 'Always'")
+			e.logger.V(1).Info("Job RestartPolicy is not set, setting it to 'OnFailure', to avoid setting it to the client's default value 'Always'")
 			job.Spec.Template.Spec.RestartPolicy = corev1.RestartPolicyOnFailure
 		}
 
 		// Set ScaledObject instance as the owner and controller
-		err := controllerutil.SetControllerReference(scaledJob, job, h.reconcilerScheme)
+		err := controllerutil.SetControllerReference(scaledJob, job, e.reconcilerScheme)
 		if err != nil {
-			h.logger.Error(err, "Failed to set ScaledObject as the owner of the new Job")
+			e.logger.Error(err, "Failed to set ScaledObject as the owner of the new Job")
 		}
 
-		err = h.client.Create(context.TODO(), job)
+		err = e.client.Create(context.TODO(), job)
 		if err != nil {
-			h.logger.Error(err, "Failed to create a new Job")
+			e.logger.Error(err, "Failed to create a new Job")
 
 		}
 	}
-	h.logger.Info("Created jobs", "Number of jobs", scaleTo)
+	e.logger.Info("Created jobs", "Number of jobs", scaleTo)
 
 }
 
-func (h *scaleExecutor) isJobFinished(j *batchv1.Job) bool {
+func (e *scaleExecutor) isJobFinished(j *batchv1.Job) bool {
 	for _, c := range j.Status.Conditions {
 		if (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) && c.Status == v1.ConditionTrue {
 			return true
@@ -146,7 +146,7 @@ func (h *scaleExecutor) isJobFinished(j *batchv1.Job) bool {
 	return false
 }
 
-func (h *scaleExecutor) getRunningJobCount(scaledJob *kedav1alpha1.ScaledJob, maxScale int64) int64 {
+func (e *scaleExecutor) getRunningJobCount(scaledJob *kedav1alpha1.ScaledJob, maxScale int64) int64 {
 	var runningJobs int64
 
 	opts := []client.ListOption{
@@ -155,14 +155,14 @@ func (h *scaleExecutor) getRunningJobCount(scaledJob *kedav1alpha1.ScaledJob, ma
 	}
 
 	jobs := &batchv1.JobList{}
-	err := h.client.List(context.TODO(), jobs, opts...)
+	err := e.client.List(context.TODO(), jobs, opts...)
 
 	if err != nil {
 		return 0
 	}
 
 	for _, job := range jobs.Items {
-		if !h.isJobFinished(&job) {
+		if !e.isJobFinished(&job) {
 			runningJobs++
 		}
 	}

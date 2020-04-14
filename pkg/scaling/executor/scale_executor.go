@@ -42,7 +42,7 @@ func NewScaleExecutor(client client.Client, scaleClient *scale.ScalesGetter, rec
 	}
 }
 
-func (h *scaleExecutor) updateLastActiveTime(ctx context.Context, object interface{}) error {
+func (e *scaleExecutor) updateLastActiveTime(ctx context.Context, object interface{}) error {
 	key, err := cache.MetaNamespaceKeyFunc(object)
 	if err != nil {
 		return err
@@ -57,10 +57,10 @@ func (h *scaleExecutor) updateLastActiveTime(ctx context.Context, object interfa
 		// ScaledObject's metadata that are not necessary to restart the ScaleLoop were updated (eg. labels)
 		// we should try to fetch the scaledObject again and process the update once again
 		runtimeObj := object.(runtime.Object)
-		logger := h.logger.WithValues("object", runtimeObj)
+		logger := e.logger.WithValues("object", runtimeObj)
 		logger.V(1).Info("Trying to fetch updated version of object to properly update it's Status")
 
-		if err := h.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, runtimeObj); err != nil {
+		if err := e.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, runtimeObj); err != nil {
 			logger.Error(err, "Error getting updated version of object before updating it's Status")
 			return err
 		}
@@ -73,7 +73,7 @@ func (h *scaleExecutor) updateLastActiveTime(ctx context.Context, object interfa
 			obj.Status.LastActiveTime = &now
 		}
 
-		if err := h.client.Status().Update(ctx, runtimeObj); err != nil {
+		if err := e.client.Status().Update(ctx, runtimeObj); err != nil {
 			if errors.IsConflict(err) {
 				logger.Error(err, "conflict updating object", "iteration", i)
 				continue

@@ -1,7 +1,6 @@
-package scaling
+package resolver
 
 import (
-	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -109,13 +108,7 @@ var testMetadatas = []testMetadata{
 func TestResolveNonExistingConfigMapsOrSecretsEnv(t *testing.T) {
 
 	for _, testData := range testMetadatas {
-		testScaleHandler := scaleHandler{
-			client:            fake.NewFakeClient(),
-			logger:            logf.Log.WithName("test"),
-			scaleLoopContexts: &sync.Map{},
-		}
-
-		_, err := testScaleHandler.resolveEnv(testData.container, namespace)
+		_, err := resolveEnv(fake.NewFakeClient(), logf.Log.WithName("test"), testData.container, namespace)
 
 		if err != nil && !testData.isError {
 			t.Errorf("Expected success because %s got error, %s", testData.comment, err)

@@ -3,22 +3,29 @@ package scaling
 import (
 	"context"
 	"fmt"
+	"github.com/kedacore/keda/pkg/scaling/resolver"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"knative.dev/pkg/apis/duck"
 	"sync"
+	"time"
 
 	kedav1alpha1 "github.com/kedacore/keda/pkg/apis/keda/v1alpha1"
 	"github.com/kedacore/keda/pkg/scalers"
 	"github.com/kedacore/keda/pkg/scaling/executor"
-	"knative.dev/pkg/apis/duck"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/scale"
 	duckv1 "knative.dev/pkg/apis/duck/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	// Default polling interval for a ScaledObject triggers if no pollingInterval is defined.
+	defaultPollingInterval = 30
 )
 
 // ScaleHandler encapsulates the logic of calling the right scalers for
@@ -36,11 +43,6 @@ type scaleHandler struct {
 	scaleExecutor     executor.ScaleExecutor
 }
 
-const (
-	// Default polling interval for a ScaledObject triggers if no pollingInterval is defined.
-	defaultPollingInterval = 30
-)
-
 // NewScaleHandler creates a ScaleHandler object
 func NewScaleHandler(client client.Client, scaleClient *scale.ScalesGetter, reconcilerScheme *runtime.Scheme) ScaleHandler {
 	return &scaleHandler{
@@ -57,239 +59,139 @@ func (h *scaleHandler) GetScalers(scalableObject interface{}) ([]scalers.Scaler,
 		return nil, err
 	}
 
-	withPods, containerName, err := h.resolvePods(scalableObject)
+	withPods, containerName, err := h.getPods(scalableObject)
 	if err != nil {
 		return nil, err
 	}
 
-	return h.getScalers(withTriggers, withPods, containerName)
+	return h.buildScalers(withTriggers, withPods, containerName)
 }
 
-func asDuckWithTriggers(scalableObject interface{}) (*kedav1alpha1.WithTriggers, error) {
-	withTriggers := &kedav1alpha1.WithTriggers{}
+func (h *scaleHandler) HandleScalableObject(scalableObject interface{}) error {
+	withTriggers, err := asDuckWithTriggers(scalableObject)
+	if err != nil {
+		h.logger.Error(err, "error duck typing object into withTrigger")
+		return err
+	}
+
+	key := generateKey(withTriggers)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+
+	// cancel the outdated ScaleLoop for the same ScaledObject (if exists)
+	value, loaded := h.scaleLoopContexts.LoadOrStore(key, cancel)
+	if loaded {
+		cancelValue, ok := value.(context.CancelFunc)
+		if ok {
+			cancelValue()
+		}
+		h.scaleLoopContexts.Store(key, cancel)
+	}
+
+	go h.startScaleLoop(ctx, withTriggers, scalableObject)
+	return nil
+}
+
+func (h *scaleHandler) DeleteScalableObject(scalableObject interface{}) error {
+	withTriggers, err := asDuckWithTriggers(scalableObject)
+	if err != nil {
+		h.logger.Error(err, "error duck typing object into withTrigger")
+		return err
+	}
+
+	key := generateKey(withTriggers)
+
+	result, ok := h.scaleLoopContexts.Load(key)
+	if ok {
+		cancel, ok := result.(context.CancelFunc)
+		if ok {
+			cancel()
+		}
+		h.scaleLoopContexts.Delete(key)
+	} else {
+		h.logger.V(1).Info("ScaleObject was not found in controller cache", "key", key)
+	}
+
+	return nil
+}
+
+// startScaleLoop blocks forever and checks the scaledObject based on its pollingInterval
+func (h *scaleHandler) startScaleLoop(ctx context.Context, withTriggers *kedav1alpha1.WithTriggers, scalableObject interface{}) {
+	logger := h.logger.WithValues("namespace", withTriggers.GetNamespace(), "name", withTriggers.GetName())
+
+	// kick off one check to the scalers now
+	h.checkScalers(ctx, withTriggers, scalableObject)
+
+	pollingInterval := getPollingInterval(withTriggers)
+	logger.V(1).Info("Watching with pollingInterval", "PollingInterval", pollingInterval)
+
+	for {
+		select {
+		case <-time.After(pollingInterval):
+			h.checkScalers(ctx, withTriggers, scalableObject)
+		case <-ctx.Done():
+			logger.V(1).Info("Context canceled")
+			return
+		}
+	}
+}
+
+// checkScalers contains the main logic for the ScaleHandler scaling logic.
+// It'll check each trigger active status then call RequestScale
+func (h *scaleHandler) checkScalers(ctx context.Context, withTriggers *kedav1alpha1.WithTriggers, scalableObject interface{}) {
+	scalers, err := h.GetScalers(scalableObject)
+	if err != nil {
+		h.logger.Error(err, "Error getting scalers", "object", scalableObject)
+		return
+	}
+
 	switch obj := scalableObject.(type) {
 	case *kedav1alpha1.ScaledObject:
-	withTriggers = &kedav1alpha1.WithTriggers{
-			Spec: kedav1alpha1.WithTriggersSpec{
-				PollingInterval: obj.Spec.PollingInterval,
-				Triggers: obj.Spec.Triggers,
-			},
-		}
+		h.scaleExecutor.RequestScale(ctx, scalers, obj)
 	case *kedav1alpha1.ScaledJob:
-		withTriggers = &kedav1alpha1.WithTriggers{
-			Spec: kedav1alpha1.WithTriggersSpec{
-				PollingInterval: obj.Spec.PollingInterval,
-				Triggers: obj.Spec.Triggers,
-			},
-		}
-	default:
-		// here could be the conversion from unknown Duck type potentially in the future
-		return nil, fmt.Errorf("unknown scalable object type %v", scalableObject)
+		h.scaleExecutor.RequestJobScale(ctx, scalers, obj)
 	}
-	return withTriggers, nil
 }
 
-func (h *scaleHandler) resolveContainerEnv(podSpec *corev1.PodSpec, containerName string, namespace string) (map[string]string, error) {
+// GetScaledObjectScalers returns list of Scalers for the specified ScaledObject
+func (h *scaleHandler) buildScalers(withTriggers *kedav1alpha1.WithTriggers, withPods *duckv1.WithPod, containerName string) ([]scalers.Scaler, error) {
+	var scalersRes []scalers.Scaler
+	logger := h.logger.WithValues("name", withTriggers.Name, "namespace", withTriggers.Namespace)
 
-	if len(podSpec.Containers) < 1 {
-		return nil, fmt.Errorf("Target object doesn't have containers")
+	resolvedEnv, err := resolver.ResolveContainerEnv(h.client, logger, &withPods.Spec.Template.Spec, containerName, withTriggers.Namespace)
+	if err != nil {
+		return scalersRes, fmt.Errorf("error resolving secrets for ScaleTarget: %s", err)
 	}
 
-	var container corev1.Container
-	if containerName != "" {
-		for _, c := range podSpec.Containers {
-			if c.Name == containerName {
-				container = c
-				break
+	for i, trigger := range withTriggers.Spec.Triggers {
+		authParams, podIdentity := resolver.ResolveAuthRef(h.client, logger, trigger.AuthenticationRef, &withPods.Spec.Template.Spec, withTriggers.Namespace)
+
+		if podIdentity == kedav1alpha1.PodIdentityProviderAwsEKS {
+			serviceAccountName := withPods.Spec.Template.Spec.ServiceAccountName
+			serviceAccount := &corev1.ServiceAccount{}
+			err = h.client.Get(context.TODO(), types.NamespacedName{Name: serviceAccountName, Namespace: withTriggers.Namespace}, serviceAccount)
+			if err != nil {
+				closeScalers(scalersRes)
+				return []scalers.Scaler{}, fmt.Errorf("error getting service account: %s", err)
 			}
+			authParams["awsRoleArn"] = serviceAccount.Annotations[kedav1alpha1.PodIdentityAnnotationEKS]
+		} else if podIdentity == kedav1alpha1.PodIdentityProviderAwsKiam {
+			authParams["awsRoleArn"] = withPods.Spec.Template.ObjectMeta.Annotations[kedav1alpha1.PodIdentityAnnotationKiam]
 		}
 
-		if &container == nil {
-			return nil, fmt.Errorf("Couldn't find container with name %s on Target object", containerName)
-		}
-	} else {
-		container = podSpec.Containers[0]
-	}
-
-	return h.resolveEnv(&container, namespace)
-}
-
-func (h *scaleHandler) resolveEnv(container *corev1.Container, namespace string) (map[string]string, error) {
-	resolved := make(map[string]string)
-
-	if container.EnvFrom != nil {
-		for _, source := range container.EnvFrom {
-			if source.ConfigMapRef != nil {
-				if configMap, err := h.resolveConfigMap(source.ConfigMapRef, namespace); err == nil {
-					for k, v := range configMap {
-						resolved[k] = v
-					}
-				} else if source.ConfigMapRef.Optional != nil && *source.ConfigMapRef.Optional {
-					// ignore error when ConfigMap is marked as optional
-					continue
-				} else {
-					return nil, fmt.Errorf("error reading config ref %s on namespace %s/: %s", source.ConfigMapRef, namespace, err)
-				}
-			} else if source.SecretRef != nil {
-				if secretsMap, err := h.resolveSecretMap(source.SecretRef, namespace); err == nil {
-					for k, v := range secretsMap {
-						resolved[k] = v
-					}
-				} else if source.SecretRef.Optional != nil && *source.SecretRef.Optional {
-					// ignore error when Secret is marked as optional
-					continue
-				} else {
-					return nil, fmt.Errorf("error reading secret ref %s on namespace %s: %s", source.SecretRef, namespace, err)
-				}
-			}
-		}
-
-	}
-
-	if container.Env != nil {
-		for _, envVar := range container.Env {
-			var value string
-			var err error
-
-			// env is either a name/value pair or an EnvVarSource
-			if envVar.Value != "" {
-				value = envVar.Value
-			} else if envVar.ValueFrom != nil {
-				// env is an EnvVarSource, that can be on of the 4 below
-				if envVar.ValueFrom.SecretKeyRef != nil {
-					// env is a secret selector
-					value, err = h.resolveSecretValue(envVar.ValueFrom.SecretKeyRef, envVar.ValueFrom.SecretKeyRef.Key, namespace)
-					if err != nil {
-						return nil, fmt.Errorf("error resolving secret name %s for env %s in namespace %s",
-							envVar.ValueFrom.SecretKeyRef,
-							envVar.Name,
-							namespace)
-					}
-				} else if envVar.ValueFrom.ConfigMapKeyRef != nil {
-					// env is a configMap selector
-					value, err = h.resolveConfigValue(envVar.ValueFrom.ConfigMapKeyRef, envVar.ValueFrom.ConfigMapKeyRef.Key, namespace)
-					if err != nil {
-						return nil, fmt.Errorf("error resolving config %s for env %s in namespace %s",
-							envVar.ValueFrom.ConfigMapKeyRef,
-							envVar.Name,
-							namespace)
-					}
-				} else {
-					h.logger.V(1).Info("cannot resolve env %s to a value. fieldRef and resourceFieldRef env are skipped", envVar.Name)
-					continue
-				}
-
-			}
-			resolved[envVar.Name] = value
-		}
-
-	}
-
-	return resolved, nil
-}
-
-func (h *scaleHandler) resolveConfigMap(configMapRef *corev1.ConfigMapEnvSource, namespace string) (map[string]string, error) {
-	configMap := &corev1.ConfigMap{}
-	err := h.client.Get(context.TODO(), types.NamespacedName{Name: configMapRef.Name, Namespace: namespace}, configMap)
-	if err != nil {
-		return nil, err
-	}
-	return configMap.Data, nil
-}
-
-func (h *scaleHandler) resolveSecretMap(secretMapRef *corev1.SecretEnvSource, namespace string) (map[string]string, error) {
-	secret := &corev1.Secret{}
-	err := h.client.Get(context.TODO(), types.NamespacedName{Name: secretMapRef.Name, Namespace: namespace}, secret)
-	if err != nil {
-		return nil, err
-	}
-
-	secretsStr := make(map[string]string)
-	for k, v := range secret.Data {
-		secretsStr[k] = string(v)
-	}
-	return secretsStr, nil
-}
-
-func (h *scaleHandler) resolveSecretValue(secretKeyRef *corev1.SecretKeySelector, keyName, namespace string) (string, error) {
-	secret := &corev1.Secret{}
-	err := h.client.Get(context.TODO(), types.NamespacedName{Name: secretKeyRef.Name, Namespace: namespace}, secret)
-	if err != nil {
-		return "", err
-	}
-	return string(secret.Data[keyName]), nil
-
-}
-
-func (h *scaleHandler) resolveConfigValue(configKeyRef *corev1.ConfigMapKeySelector, keyName, namespace string) (string, error) {
-	configMap := &corev1.ConfigMap{}
-	err := h.client.Get(context.TODO(), types.NamespacedName{Name: configKeyRef.Name, Namespace: namespace}, configMap)
-	if err != nil {
-		return "", err
-	}
-	return string(configMap.Data[keyName]), nil
-}
-
-func closeScalers(scalers []scalers.Scaler) {
-	for _, scaler := range scalers {
-		defer scaler.Close()
-	}
-}
-
-func (h *scaleHandler) resolveAuthSecret(name, namespace, key string) string {
-	if name == "" || namespace == "" || key == "" {
-		h.logger.Error(fmt.Errorf("Error trying to get secret"), "name, namespace and key are required", "Secret.Namespace", namespace, "Secret.Name", name, "key", key)
-		return ""
-	}
-
-	secret := &corev1.Secret{}
-	err := h.client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, secret)
-	if err != nil {
-		h.logger.Error(err, "Error trying to get secret from namespace", "Secret.Namespace", namespace, "Secret.Name", name)
-		return ""
-	}
-	result := secret.Data[key]
-
-	if result == nil {
-		return ""
-	}
-
-	return string(result)
-}
-
-func (h *scaleHandler) parseAuthRef(triggerAuthRef *kedav1alpha1.ScaledObjectAuthRef, withTriggers *kedav1alpha1.WithTriggers, podSpec *corev1.PodSpec) (map[string]string, string) {
-	result := make(map[string]string)
-	podIdentity := ""
-
-	if triggerAuthRef != nil && triggerAuthRef.Name != "" {
-		triggerAuth := &kedav1alpha1.TriggerAuthentication{}
-		err := h.client.Get(context.TODO(), types.NamespacedName{Name: triggerAuthRef.Name, Namespace: withTriggers.Namespace}, triggerAuth)
+		scaler, err := buildScaler(withTriggers.Name, withTriggers.Namespace, trigger.Type, resolvedEnv, trigger.Metadata, authParams, podIdentity)
 		if err != nil {
-			h.logger.Error(err, "Error getting triggerAuth", "triggerAuthRef.Name", triggerAuthRef.Name)
-		} else {
-			podIdentity = string(triggerAuth.Spec.PodIdentity.Provider)
-			if triggerAuth.Spec.Env != nil {
-				for _, e := range triggerAuth.Spec.Env {
-					env, err := h.resolveContainerEnv(podSpec, e.ContainerName, withTriggers.Namespace)
-					if err != nil {
-						result[e.Parameter] = ""
-					} else {
-						result[e.Parameter] = env[e.Name]
-					}
-				}
-			}
-			if triggerAuth.Spec.SecretTargetRef != nil {
-				for _, e := range triggerAuth.Spec.SecretTargetRef {
-					result[e.Parameter] = h.resolveAuthSecret(e.Name, withTriggers.Namespace, e.Key)
-				}
-			}
+			closeScalers(scalersRes)
+			return []scalers.Scaler{}, fmt.Errorf("error getting scaler for trigger #%d: %s", i, err)
 		}
+
+		scalersRes = append(scalersRes, scaler)
 	}
 
-	return result, podIdentity
+	return scalersRes, nil
 }
 
-func (h *scaleHandler) resolvePods(scalableObject interface{}) (*duckv1.WithPod, string, error) {
+func (h *scaleHandler) getPods(scalableObject interface{}) (*duckv1.WithPod, string, error) {
 	switch obj := scalableObject.(type) {
 	case *kedav1alpha1.ScaledObject:
 		unstruct := &unstructured.Unstructured{}
@@ -307,54 +209,17 @@ func (h *scaleHandler) resolvePods(scalableObject interface{}) (*duckv1.WithPod,
 
 		if withPods.Spec.Template.Spec.Containers == nil {
 			h.logger.Info("There aren't any containers in the ScaleTarget", "resource", obj.Status.ScaleTargetGVKR.GVKString(), "name", obj.Spec.ScaleTargetRef.Name)
-			return nil, "", fmt.Errorf("No containers found")
+			return nil, "", fmt.Errorf("no containers found")
 		}
 
 		return withPods, obj.Spec.ScaleTargetRef.ContainerName, nil
 	}
 
-	// TODO: implement this for ScaledJobs!! 
+	// TODO: implement this for ScaledJobs!!
 	return nil, "", fmt.Errorf("resolvePods is only implemented for ScaledObjects so far")
 }
 
-// GetScaledObjectScalers returns list of Scalers for the specified ScaledObject
-func (h *scaleHandler) getScalers(scalableType *kedav1alpha1.WithTriggers, withPods *duckv1.WithPod, containerName string) ([]scalers.Scaler, error) {
-	scalersRes := []scalers.Scaler{}
-
-	resolvedEnv, err := h.resolveContainerEnv(&withPods.Spec.Template.Spec, containerName, scalableType.Namespace)
-	if err != nil {
-		return scalersRes, fmt.Errorf("error resolving secrets for ScaleTarget: %s", err)
-	}
-
-	for i, trigger := range scalableType.Spec.Triggers {
-		authParams, podIdentity := h.parseAuthRef(trigger.AuthenticationRef, scalableType, &withPods.Spec.Template.Spec)
-
-		if podIdentity == kedav1alpha1.PodIdentityProviderAwsEKS {
-			serviceAccountName := withPods.Spec.Template.Spec.ServiceAccountName
-			serviceAccount := &corev1.ServiceAccount{}
-			err = h.client.Get(context.TODO(), types.NamespacedName{Name: serviceAccountName, Namespace: scalableType.Namespace}, serviceAccount)
-			if err != nil {
-				closeScalers(scalersRes)
-				return []scalers.Scaler{}, fmt.Errorf("error getting service account: %s", err)
-			}
-			authParams["awsRoleArn"] = serviceAccount.Annotations[kedav1alpha1.PodIdentityAnnotationEKS]
-		} else if podIdentity == kedav1alpha1.PodIdentityProviderAwsKiam {
-			authParams["awsRoleArn"] = withPods.Spec.Template.ObjectMeta.Annotations[kedav1alpha1.PodIdentityAnnotationKiam]
-		}
-
-		scaler, err := h.getScaler(scalableType.Name, scalableType.Namespace, trigger.Type, resolvedEnv, trigger.Metadata, authParams, podIdentity)
-		if err != nil {
-			closeScalers(scalersRes)
-			return []scalers.Scaler{}, fmt.Errorf("error getting scaler for trigger #%d: %s", i, err)
-		}
-
-		scalersRes = append(scalersRes, scaler)
-	}
-
-	return scalersRes, nil
-}
-
-func (h *scaleHandler) getScaler(name, namespace, triggerType string, resolvedEnv, triggerMetadata, authParams map[string]string, podIdentity string) (scalers.Scaler, error) {
+func buildScaler(name, namespace, triggerType string, resolvedEnv, triggerMetadata, authParams map[string]string, podIdentity string) (scalers.Scaler, error) {
 	switch triggerType {
 	case "azure-queue":
 		return scalers.NewAzureQueueScaler(resolvedEnv, triggerMetadata, authParams, podIdentity)
@@ -397,4 +262,46 @@ func (h *scaleHandler) getScaler(name, namespace, triggerType string, resolvedEn
 	default:
 		return nil, fmt.Errorf("no scaler found for type: %s", triggerType)
 	}
+}
+
+func asDuckWithTriggers(scalableObject interface{}) (*kedav1alpha1.WithTriggers, error) {
+	withTriggers := &kedav1alpha1.WithTriggers{}
+	switch obj := scalableObject.(type) {
+	case *kedav1alpha1.ScaledObject:
+		withTriggers = &kedav1alpha1.WithTriggers{
+			Spec: kedav1alpha1.WithTriggersSpec{
+				PollingInterval: obj.Spec.PollingInterval,
+				Triggers:        obj.Spec.Triggers,
+			},
+		}
+	case *kedav1alpha1.ScaledJob:
+		withTriggers = &kedav1alpha1.WithTriggers{
+			Spec: kedav1alpha1.WithTriggersSpec{
+				PollingInterval: obj.Spec.PollingInterval,
+				Triggers:        obj.Spec.Triggers,
+			},
+		}
+	default:
+		// here could be the conversion from unknown Duck type potentially in the future
+		return nil, fmt.Errorf("unknown scalable object type %v", scalableObject)
+	}
+	return withTriggers, nil
+}
+
+func closeScalers(scalers []scalers.Scaler) {
+	for _, scaler := range scalers {
+		defer scaler.Close()
+	}
+}
+
+func getPollingInterval(withTriggers *kedav1alpha1.WithTriggers) time.Duration {
+	if withTriggers.Spec.PollingInterval != nil {
+		return time.Second * time.Duration(*withTriggers.Spec.PollingInterval)
+	}
+
+	return time.Second * time.Duration(defaultPollingInterval)
+}
+
+func generateKey(scalableObject *kedav1alpha1.WithTriggers) string {
+	return fmt.Sprintf("%s.%s.%s", scalableObject.Kind, scalableObject.Namespace, scalableObject.Name)
 }
