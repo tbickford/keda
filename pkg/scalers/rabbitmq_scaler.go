@@ -212,6 +212,11 @@ func (s *rabbitMQScaler) getQueueInfoViaHttp() (*queueInfo, error) {
 	}
 
 	vhost := parsedUrl.Path
+
+	if vhost == "/" || vhost == "//" {
+		vhost = "/%2F"
+	}
+
 	parsedUrl.Path = ""
 
 	getQueueInfoManagementURI := fmt.Sprintf("%s/%s%s/%s", parsedUrl.String(), "api/queues", vhost, s.metadata.queueName)
