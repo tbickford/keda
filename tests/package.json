@@ -18,9 +18,12 @@
   },
   "dependencies": {
     "@kubernetes/client-node": "^0.10.3",
+    "@types/amqplib": "^0.5.13",
     "@types/async": "^3.0.3",
     "@types/shelljs": "^0.8.5",
     "@types/tmp": "^0.1.0",
+    "amqp": "^0.2.7",
+    "amqplib": "^0.5.5",
     "async": "^3.1.0",
     "ava": "^2.4.0",
     "azure-storage": "^2.10.3",
