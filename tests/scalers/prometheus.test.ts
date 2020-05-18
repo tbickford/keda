@@ -8,7 +8,6 @@ const testNamespace = 'prometheus-test'
 const prometheusNamespace = 'monitoring'
 const prometheusDeploymentFile = 'scalers/prometheus-deployment.yaml'
 
-
 test.before(t => {
   // install prometheus
   sh.exec(`kubectl create namespace ${prometheusNamespace}`)
