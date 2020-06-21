@@ -7,6 +7,7 @@ import (
 
 	kedav1alpha1 "github.com/kedacore/keda/pkg/apis/keda/v1alpha1"
 	"github.com/kedacore/keda/pkg/handler"
+	prommetrics "github.com/kedacore/keda/pkg/metrics"
 
 	"github.com/go-logr/logr"
 	"github.com/kubernetes-incubator/custom-metrics-apiserver/pkg/provider"
@@ -33,6 +34,7 @@ type externalMetric struct {
 }
 
 var logger logr.Logger
+var metricsServer prommetrics.PrometheusMetricServer
 
 // NewProvider returns an instance of KedaProvider
 func NewProvider(adapterLogger logr.Logger, scaleHandler *handler.ScaleHandler, client client.Client, watchedNamespace string) provider.MetricsProvider {
@@ -45,6 +47,7 @@ func NewProvider(adapterLogger logr.Logger, scaleHandler *handler.ScaleHandler, 
 	}
 	logger = adapterLogger.WithName("provider")
 	logger.Info("starting")
+	go func() { metricsServer.NewServer(":9022", "/metrics") }()
 	return provider
 }
 
@@ -93,8 +96,13 @@ func (p *KedaProvider) GetExternalMetric(namespace string, metricSelector labels
 				if err != nil {
 					logger.Error(err, "error getting metric for scaler", "ScaledObject.Namespace", scaledObject.Namespace, "ScaledObject.Name", scaledObject.Name, "Scaler", scaler)
 				} else {
+					for _, metric := range metrics {
+						metricValue, _ := metric.Value.AsInt64()
+						metricsServer.RecordHPAScalerMetrics(namespace, metric.MetricName, metricSelector.String(), metricValue)
+					}
 					matchingMetrics = append(matchingMetrics, metrics...)
 				}
+				metricsServer.RecordHPAScalerErrorTotals(namespace, info.Metric, metricSelector.String(), err)
 			}
 		}
 
