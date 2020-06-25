@@ -9,6 +9,7 @@ import (
 	"github.com/kedacore/keda/pkg/scaling"
 
 	"github.com/go-logr/logr"
+	prommetrics "github.com/kedacore/keda/pkg/metrics"
 	"github.com/kubernetes-incubator/custom-metrics-apiserver/pkg/provider"
 	apiErrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
@@ -25,6 +26,7 @@ type KedaProvider struct {
 	externalMetrics  []externalMetric
 	scaleHandler     scaling.ScaleHandler
 	watchedNamespace string
+	metricServer     prommetrics.Server
 }
 type externalMetric struct {
 	info   provider.ExternalMetricInfo
@@ -35,13 +37,14 @@ type externalMetric struct {
 var logger logr.Logger
 
 // NewProvider returns an instance of KedaProvider
-func NewProvider(adapterLogger logr.Logger, scaleHandler scaling.ScaleHandler, client client.Client, watchedNamespace string) provider.MetricsProvider {
+func NewProvider(adapterLogger logr.Logger, scaleHandler scaling.ScaleHandler, client client.Client, watchedNamespace string, metricsServer prommetrics.Server) provider.MetricsProvider {
 	provider := &KedaProvider{
 		values:           make(map[provider.CustomMetricInfo]int64),
 		externalMetrics:  make([]externalMetric, 2, 10),
 		client:           client,
 		scaleHandler:     scaleHandler,
 		watchedNamespace: watchedNamespace,
+		metricServer:     metricsServer,
 	}
 	logger = adapterLogger.WithName("provider")
 	logger.Info("starting")
@@ -93,7 +96,12 @@ func (p *KedaProvider) GetExternalMetric(namespace string, metricSelector labels
 				if err != nil {
 					logger.Error(err, "error getting metric for scaler", "ScaledObject.Namespace", scaledObject.Namespace, "ScaledObject.Name", scaledObject.Name, "Scaler", scaler)
 				} else {
+					for _, metric := range metrics {
+						metricValue, _ := metric.Value.AsInt64()
+						p.metricServer.RecordHPAScalerMetrics(namespace, metric.MetricName, metricSelector.String(), metricValue)
+					}
 					matchingMetrics = append(matchingMetrics, metrics...)
+					p.metricServer.RecordHPAScalerErrorTotals(namespace, info.Metric, metricSelector.String(), err)
 				}
 			}
 		}
