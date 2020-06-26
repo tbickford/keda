@@ -30,33 +30,32 @@ var (
 	)
 )
 
-// PrometheusMetricServer the type of MetricsServer
-type prometheusMetricServer struct {
+type prometheusMetricsExporter struct {
 	registry *prometheus.Registry
 }
 
-// NewPrometheusMetricsServer return a new instance of the prometheus metrics server
-func NewPrometheusMetricsServer() Server {
+// NewPrometheusMetricsExporter return a new instance of the prometheus metrics server
+func NewPrometheusMetricsExporter() Exporter {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(scalerErrorsTotal)
 	registry.MustRegister(scalerMetricsValue)
-	return &prometheusMetricServer{registry: registry}
+	return &prometheusMetricsExporter{registry: registry}
 }
 
-// StartServer starts an HTTP serve to serve metrics
-func (metricsServer *prometheusMetricServer) StartServer(address string, pattern string) {
+// StartServer starts an HTTP server to serve the metrics to export
+func (exporter prometheusMetricsExporter) StartServer(address string, pattern string) {
 	log.Printf("Starting metrics server at %v", address)
-	http.Handle(pattern, promhttp.HandlerFor(metricsServer.registry, promhttp.HandlerOpts{}))
+	http.Handle(pattern, promhttp.HandlerFor(exporter.registry, promhttp.HandlerOpts{}))
 	log.Fatal(http.ListenAndServe(address, nil))
 }
 
 // RecordHPAScalerMetrics create a measurement of the external metric used by the HPA
-func (metricsServer *prometheusMetricServer) RecordHPAScalerMetrics(namespace string, metric string, selector string, value int64) {
+func (exporter prometheusMetricsExporter) RecordHPAScalerMetrics(namespace string, metric string, selector string, value int64) {
 	scalerMetricsValue.With(getLabels(namespace, metric, selector)).Set(float64(value))
 }
 
 // RecordHPAScalerErrorTotals counts the number of errors occurred in trying get an external metric used by the HPA
-func (metricsServer *prometheusMetricServer) RecordHPAScalerErrorTotals(namespace string, metric string, selector string, err error) {
+func (exporter prometheusMetricsExporter) RecordHPAScalerErrorTotals(namespace string, metric string, selector string, err error) {
 	if err != nil {
 		scalerErrorsTotal.With(getLabels(namespace, metric, selector)).Inc()
 		return

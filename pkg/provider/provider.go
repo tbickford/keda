@@ -26,7 +26,7 @@ type KedaProvider struct {
 	externalMetrics  []externalMetric
 	scaleHandler     scaling.ScaleHandler
 	watchedNamespace string
-	metricServer     prommetrics.Server
+	metricsExporter  prommetrics.Exporter
 }
 type externalMetric struct {
 	info   provider.ExternalMetricInfo
@@ -37,14 +37,14 @@ type externalMetric struct {
 var logger logr.Logger
 
 // NewProvider returns an instance of KedaProvider
-func NewProvider(adapterLogger logr.Logger, scaleHandler scaling.ScaleHandler, client client.Client, watchedNamespace string, metricsServer prommetrics.Server) provider.MetricsProvider {
+func NewProvider(adapterLogger logr.Logger, scaleHandler scaling.ScaleHandler, client client.Client, watchedNamespace string, metricsExporter prommetrics.Exporter) provider.MetricsProvider {
 	provider := &KedaProvider{
 		values:           make(map[provider.CustomMetricInfo]int64),
 		externalMetrics:  make([]externalMetric, 2, 10),
 		client:           client,
 		scaleHandler:     scaleHandler,
 		watchedNamespace: watchedNamespace,
-		metricServer:     metricsServer,
+		metricsExporter:  metricsExporter,
 	}
 	logger = adapterLogger.WithName("provider")
 	logger.Info("starting")
@@ -98,10 +98,10 @@ func (p *KedaProvider) GetExternalMetric(namespace string, metricSelector labels
 				} else {
 					for _, metric := range metrics {
 						metricValue, _ := metric.Value.AsInt64()
-						p.metricServer.RecordHPAScalerMetrics(namespace, metric.MetricName, metricSelector.String(), metricValue)
+						p.metricsExporter.RecordHPAScalerMetrics(namespace, metric.MetricName, metricSelector.String(), metricValue)
 					}
 					matchingMetrics = append(matchingMetrics, metrics...)
-					p.metricServer.RecordHPAScalerErrorTotals(namespace, info.Metric, metricSelector.String(), err)
+					p.metricsExporter.RecordHPAScalerErrorTotals(namespace, info.Metric, metricSelector.String(), err)
 				}
 			}
 		}
