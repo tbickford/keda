@@ -101,8 +101,8 @@ func (p *KedaProvider) GetExternalMetric(namespace string, metricSelector labels
 						p.metricsExporter.RecordHPAScalerMetrics(namespace, metric.MetricName, metricSelector.String(), metricValue)
 					}
 					matchingMetrics = append(matchingMetrics, metrics...)
-					p.metricsExporter.RecordHPAScalerErrorTotals(namespace, info.Metric, metricSelector.String(), err)
 				}
+				p.metricsExporter.RecordHPAScalerErrors(namespace, info.Metric, metricSelector.String(), err)
 			}
 		}
 

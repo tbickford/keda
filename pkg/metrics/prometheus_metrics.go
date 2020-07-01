@@ -9,12 +9,12 @@ import (
 )
 
 var (
-	metricLabels      = []string{"namespace", "metric", "selector"}
-	scalerErrorsTotal = prometheus.NewCounterVec(
+	metricLabels = []string{"namespace", "metric", "selector"}
+	scalerErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "keda_hpa",
 			Subsystem: "scaler",
-			Name:      "errors_total",
+			Name:      "errors",
 			Help:      "Number of scaler errors",
 		},
 		metricLabels,
@@ -28,6 +28,15 @@ var (
 		},
 		metricLabels,
 	)
+	errorTotals = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "keda_hpa",
+			Subsystem: "scaler",
+			Name:      "error_totals",
+			Help:      "Total number of scaler errors",
+		},
+		[]string{},
+	)
 )
 
 type prometheusMetricsExporter struct {
@@ -37,8 +46,10 @@ type prometheusMetricsExporter struct {
 // NewPrometheusMetricsExporter return a new instance of the prometheus metrics server
 func NewPrometheusMetricsExporter() Exporter {
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(scalerErrorsTotal)
+	registry.MustRegister(scalerErrors)
 	registry.MustRegister(scalerMetricsValue)
+	registry.MustRegister(errorTotals)
+	errorTotals.With(prometheus.Labels{}) // initialize errors at 0
 	return &prometheusMetricsExporter{registry: registry}
 }
 
@@ -54,14 +65,15 @@ func (exporter prometheusMetricsExporter) RecordHPAScalerMetrics(namespace strin
 	scalerMetricsValue.With(getLabels(namespace, metric, selector)).Set(float64(value))
 }
 
-// RecordHPAScalerErrorTotals counts the number of errors occurred in trying get an external metric used by the HPA
-func (exporter prometheusMetricsExporter) RecordHPAScalerErrorTotals(namespace string, metric string, selector string, err error) {
+// RecordHPAScalerErrors counts the number of errors occurred in trying get an external metric used by the HPA
+func (exporter prometheusMetricsExporter) RecordHPAScalerErrors(namespace string, metric string, selector string, err error) {
 	if err != nil {
-		scalerErrorsTotal.With(getLabels(namespace, metric, selector)).Inc()
+		scalerErrors.With(getLabels(namespace, metric, selector)).Inc()
+		errorTotals.With(prometheus.Labels{}).Inc()
 		return
 	}
 	// initialize metric with 0 if not already set
-	scalerErrorsTotal.GetMetricWith(getLabels(namespace, metric, selector))
+	scalerErrors.GetMetricWith(getLabels(namespace, metric, selector))
 }
 
 func getLabels(namespace string, metric string, selector string) prometheus.Labels {
