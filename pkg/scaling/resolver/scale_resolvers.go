@@ -63,6 +63,7 @@ func ResolveAuthRef(client client.Client, logger logr.Logger, triggerAuthRef *ke
 					result[e.Parameter] = resolveAuthSecret(client, logger, e.Name, namespace, e.Key)
 				}
 			}
+<<<<<<< HEAD
 			if triggerAuth.Spec.HashiCorpVault.Secrets != nil {
 				vault := NewHashicorpVaultHandler(&triggerAuth.Spec.HashiCorpVault)
 				err := vault.Initialize(logger)
@@ -83,6 +84,8 @@ func ResolveAuthRef(client client.Client, logger logr.Logger, triggerAuthRef *ke
 					vault.Stop()
 				}
 			}
+=======
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 		}
 	}
 
@@ -225,6 +228,7 @@ func resolveAuthSecret(client client.Client, logger logr.Logger, name, namespace
 
 	return string(result)
 }
+<<<<<<< HEAD
 
 func resolveVaultSecret(logger logr.Logger, data map[string]interface{}, key string) string {
 	if v2Data, ok := data["data"].(map[string]interface{}); ok {
@@ -241,3 +245,5 @@ func resolveVaultSecret(logger logr.Logger, data map[string]interface{}, key str
 	logger.Error(fmt.Errorf("unable to convert Vault Data value"), "Error trying to convert Data secret vaule")
 	return ""
 }
+=======
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514

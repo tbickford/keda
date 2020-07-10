@@ -41,11 +41,16 @@ type ScaledObjectSpec struct {
 	// +optional
 	MaxReplicaCount *int32 `json:"maxReplicaCount,omitempty"`
 	// +optional
+<<<<<<< HEAD
 	Advanced *AdvancedConfig `json:"advanced,omitempty"`
+=======
+	Behavior *autoscalingv2beta2.HorizontalPodAutoscalerBehavior `json:"behavior,omitempty"`
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 
 	Triggers []ScaleTriggers `json:"triggers"`
 }
 
+<<<<<<< HEAD
 type AdvancedConfig struct {
 	HorizontalPodAutoscalerConfig *HorizontalPodAutoscalerConfig `json:"horizontalPodAutoscalerConfig,omitempty"`
 }
@@ -56,6 +61,8 @@ type HorizontalPodAutoscalerConfig struct {
 	Behavior *autoscalingv2beta2.HorizontalPodAutoscalerBehavior `json:"behavior,omitempty"`
 }
 
+=======
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 //ScaleTarget holds the a reference to the scale target Object
 // +k8s:openapi-gen=true
 type ScaleTarget struct {

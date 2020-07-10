@@ -32,10 +32,13 @@ type TriggerAuthenticationSpec struct {
 	// +optional
 	Env []AuthEnvironment `json:"env"`
 
+<<<<<<< HEAD
 	// +optional
 	HashiCorpVault HashiCorpVault `json:"hashiCorpVault"`
 }
 
+=======
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // TriggerAuthenticationList contains a list of TriggerAuthentication

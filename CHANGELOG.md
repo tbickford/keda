@@ -14,6 +14,7 @@
 
 ## v2.0.0
 
+<<<<<<< HEAD
 ### New
 
 - KEDA scales any CustomResource that implements Scale subresource ([#703](https://github.com/kedacore/keda/issues/703))
@@ -40,6 +41,13 @@
 - Update Operator SDK and k8s deps ([#870](https://github.com/kedacore/keda/issues/870))
 - Added ScaledObject Status Conditions to display status of scaling ([#750](https://github.com/kedacore/keda/pull/750))
 
+=======
+### Breaking Changes
+
+- Remove `New()` and `Close()` from the interface of `service ExternalScaler` in `externalscaler.proto`.
+- Removed deprecated brokerList for Kafka scaler ([#882](https://github.com/kedacore/keda/pull/882))
+
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 ## v1.4.1
 
 ### New

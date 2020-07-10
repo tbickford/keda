@@ -52,8 +52,13 @@ func (r *ReconcileScaledObject) newHPAForScaledObject(logger logr.Logger, scaled
 	}
 
 	var behavior *autoscalingv2beta2.HorizontalPodAutoscalerBehavior
+<<<<<<< HEAD
 	if r.kubeVersion.MinorVersion >= 18 && scaledObject.Spec.Advanced != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig != nil {
 		behavior = scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior
+=======
+	if r.kubeVersion.MinorVersion >= 18 {
+		behavior = scaledObject.Spec.Behavior
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 	} else {
 		behavior = nil
 	}
@@ -128,12 +133,15 @@ func (r *ReconcileScaledObject) getScaledObjectMetricSpecs(logger logr.Logger, s
 		return nil, err
 	}
 
+<<<<<<< HEAD
 	// Handling the Resource metrics through KEDA
 	if scaledObject.Spec.Advanced != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig != nil {
 		metrics := getResourceMetrics(scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.ResourceMetrics)
 		scaledObjectMetricSpecs = append(scaledObjectMetricSpecs, metrics...)
 	}
 
+=======
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 	for _, scaler := range scalers {
 		metricSpecs := scaler.GetMetricSpecForScaling()
 
@@ -159,6 +167,7 @@ func (r *ReconcileScaledObject) getScaledObjectMetricSpecs(logger logr.Logger, s
 	return scaledObjectMetricSpecs, nil
 }
 
+<<<<<<< HEAD
 func getResourceMetrics(resourceMetrics []*autoscalingv2beta2.ResourceMetricSource) []autoscalingv2beta2.MetricSpec {
 	metrics := make([]autoscalingv2beta2.MetricSpec, 0, len(resourceMetrics))
 	for _, resourceMetric := range resourceMetrics {
@@ -175,6 +184,12 @@ func getResourceMetrics(resourceMetrics []*autoscalingv2beta2.ResourceMetricSour
 func (r *ReconcileScaledObject) checkMinK8sVersionforHPABehavior(logger logr.Logger, scaledObject *kedav1alpha1.ScaledObject) {
 	if r.kubeVersion.MinorVersion < 18 {
 		if scaledObject.Spec.Advanced != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior != nil {
+=======
+// checkMinK8sVersionforHPABehavior min version (k8s v1.18) for HPA Behavior
+func (r *ReconcileScaledObject) checkMinK8sVersionforHPABehavior(logger logr.Logger, scaledObject *kedav1alpha1.ScaledObject) {
+	if r.kubeVersion.MinorVersion < 18 {
+		if scaledObject.Spec.Behavior != nil {
+>>>>>>> f1393b034fc5a51b5b9b16741765f7612438d514
 			logger.Info("Warning: Ignoring scaledObject.spec.behavior, it is only supported on kubernetes version >= 1.18", "kubernetes.version", r.kubeVersion.PrettyVersion)
 		}
 	}
